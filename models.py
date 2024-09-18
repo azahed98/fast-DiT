@@ -76,10 +76,15 @@ class LabelEmbedder(nn.Module):
         self.embedding_table = nn.Embedding(num_classes + use_cfg_embedding, hidden_size)
         self.num_classes = num_classes
         self.dropout_prob = dropout_prob
-        if self.dropout_prob > 0:
-            self.forward = self._forward_token_drop
+
+    def forward(self, labels, train, force_drop_ids=None):
+        use_dropout = self.dropout_prob > 0
+        if force_drop_ids is not None:
+            return self._forward_force_token_drop(labels, force_drop_ids)
+        elif train and use_dropout :
+            return self._forward_token_drop(labels)
         else:
-            self.forward = self._forward_no_drop
+            return self._forward_no_drop(labels)
 
     @torch.compile
     def token_drop(self, labels, drop_ids):
@@ -262,7 +267,7 @@ class DiT(nn.Module):
         """
         x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
         t = self.t_embedder(t)                   # (N, D)
-        y = self.y_embedder(y)    # (N, D)
+        y = self.y_embedder(y, self.training)    # (N, D)
         c = t + y                                # (N, D)
         for block in self.blocks:
             x = torch.utils.checkpoint.checkpoint(self.ckpt_wrapper(block), x, c)       # (N, T, D)

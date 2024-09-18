@@ -19,3 +19,6 @@ dependencies:
     - diffusers
     - accelerate
     - triton==3.0.0
+    - packaging
+    - ninja
+    - flash-attn --no-build-isolation
