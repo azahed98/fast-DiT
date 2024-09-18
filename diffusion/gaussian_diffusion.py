@@ -7,12 +7,13 @@
 import math
 
 import numpy as np
+import torch
 import torch as th
 import enum
 
 from .diffusion_utils import discretized_gaussian_log_likelihood, normal_kl
 
-
+@torch.compile
 def mean_flat(tensor):
     """
     Take the mean over all non-batch dimensions.
@@ -54,7 +55,7 @@ class LossType(enum.Enum):
     def is_vb(self):
         return self == LossType.KL or self == LossType.RESCALED_KL
 
-
+@torch.compile
 def _warmup_beta(beta_start, beta_end, num_diffusion_timesteps, warmup_frac):
     betas = beta_end * np.ones(num_diffusion_timesteps, dtype=np.float64)
     warmup_time = int(num_diffusion_timesteps * warmup_frac)
@@ -121,7 +122,7 @@ def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
     else:
         raise NotImplementedError(f"unknown beta schedule: {schedule_name}")
 
-
+@torch.compile
 def betas_for_alpha_bar(num_diffusion_timesteps, alpha_bar, max_beta=0.999):
     """
     Create a beta schedule that discretizes the given alpha_t_bar function,
@@ -162,6 +163,9 @@ class GaussianDiffusion:
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
         self.loss_type = loss_type
+        self.mse_rescale = 1000.0 if self.loss_type == LossType.RESCALED_MSE else 1.0
+        
+        self.create_training_loss_fnctn()
 
         # Use float64 for accuracy.
         betas = np.array(betas, dtype=np.float64)
@@ -200,6 +204,7 @@ class GaussianDiffusion:
             (1.0 - self.alphas_cumprod_prev) * np.sqrt(alphas) / (1.0 - self.alphas_cumprod)
         )
 
+    @torch.compile
     def q_mean_variance(self, x_start, t):
         """
         Get the distribution q(x_t | x_0).
@@ -211,7 +216,8 @@ class GaussianDiffusion:
         variance = _extract_into_tensor(1.0 - self.alphas_cumprod, t, x_start.shape)
         log_variance = _extract_into_tensor(self.log_one_minus_alphas_cumprod, t, x_start.shape)
         return mean, variance, log_variance
-
+    
+    @torch.compile
     def q_sample(self, x_start, t, noise=None):
         """
         Diffuse the data for a given number of diffusion steps.
@@ -228,7 +234,7 @@ class GaussianDiffusion:
             _extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
             + _extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
-
+    @torch.compile
     def q_posterior_mean_variance(self, x_start, x_t, t):
         """
         Compute the mean and variance of the diffusion posterior:
@@ -250,7 +256,7 @@ class GaussianDiffusion:
             == x_start.shape[0]
         )
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
-
+    
     def p_mean_variance(self, model, x, t, clip_denoised=True, denoised_fn=None, model_kwargs=None):
         """
         Apply the model to get p(x_{t-1} | x_t), as well as a prediction of
@@ -331,6 +337,7 @@ class GaussianDiffusion:
             "extra": extra,
         }
 
+    @torch.compile
     def _predict_xstart_from_eps(self, x_t, t, eps):
         assert x_t.shape == eps.shape
         return (
@@ -338,11 +345,13 @@ class GaussianDiffusion:
             - _extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape) * eps
         )
 
+    @torch.compile
     def _predict_eps_from_xstart(self, x_t, t, pred_xstart):
         return (
             _extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t - pred_xstart
         ) / _extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape)
 
+    @torch.compile
     def condition_mean(self, cond_fn, p_mean_var, x, t, model_kwargs=None):
         """
         Compute the mean for the previous step, given a function cond_fn that
@@ -355,6 +364,7 @@ class GaussianDiffusion:
         new_mean = p_mean_var["mean"].float() + p_mean_var["variance"] * gradient.float()
         return new_mean
 
+    @torch.compile
     def condition_score(self, cond_fn, p_mean_var, x, t, model_kwargs=None):
         """
         Compute what the p_mean_variance output would have been, should the
@@ -373,6 +383,7 @@ class GaussianDiffusion:
         out["mean"], _, _ = self.q_posterior_mean_variance(x_start=out["pred_xstart"], x_t=x, t=t)
         return out
 
+    @torch.compile
     def p_sample(
         self,
         model,
@@ -416,6 +427,7 @@ class GaussianDiffusion:
         sample = out["mean"] + nonzero_mask * th.exp(0.5 * out["log_variance"]) * noise
         return {"sample": sample, "pred_xstart": out["pred_xstart"]}
 
+    @torch.compile
     def p_sample_loop(
         self,
         model,
@@ -461,6 +473,7 @@ class GaussianDiffusion:
             final = sample
         return final["sample"]
 
+    @torch.compile
     def p_sample_loop_progressive(
         self,
         model,
@@ -510,6 +523,7 @@ class GaussianDiffusion:
                 yield out
                 img = out["sample"]
 
+    @torch.compile
     def ddim_sample(
         self,
         model,
@@ -559,6 +573,7 @@ class GaussianDiffusion:
         sample = mean_pred + nonzero_mask * sigma * noise
         return {"sample": sample, "pred_xstart": out["pred_xstart"]}
 
+    # @torch.compile
     def ddim_reverse_sample(
         self,
         model,
@@ -596,7 +611,8 @@ class GaussianDiffusion:
         mean_pred = out["pred_xstart"] * th.sqrt(alpha_bar_next) + th.sqrt(1 - alpha_bar_next) * eps
 
         return {"sample": mean_pred, "pred_xstart": out["pred_xstart"]}
-
+    
+    # @torch.compile
     def ddim_sample_loop(
         self,
         model,
@@ -630,6 +646,7 @@ class GaussianDiffusion:
             final = sample
         return final["sample"]
 
+    # @torch.compile
     def ddim_sample_loop_progressive(
         self,
         model,
@@ -679,6 +696,7 @@ class GaussianDiffusion:
                 yield out
                 img = out["sample"]
 
+    @torch.compile
     def _vb_terms_bpd(
             self, model, x_start, x_t, t, clip_denoised=True, model_kwargs=None
     ):
@@ -729,11 +747,84 @@ class GaussianDiffusion:
         if noise is None:
             noise = th.randn_like(x_start)
         x_t = self.q_sample(x_start, t, noise=noise)
+        return self._training_losses(model, x_start, x_t, t, noise=noise, model_kwargs=model_kwargs)
+        # terms = {}
 
-        terms = {}
+        # if self.loss_type == LossType.KL or self.loss_type == LossType.RESCALED_KL:
+        #     terms["loss"] = self._vb_terms_bpd(
+        #         model=model,
+        #         x_start=x_start,
+        #         x_t=x_t,
+        #         t=t,
+        #         clip_denoised=False,
+        #         model_kwargs=model_kwargs,
+        #     )["output"]
+        #     if self.loss_type == LossType.RESCALED_KL:
+        #         terms["loss"] *= self.num_timesteps
+        # elif self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
+        #     model_output = model(x_t, t, **model_kwargs)
 
+        #     if self.model_var_type in [
+        #         ModelVarType.LEARNED,
+        #         ModelVarType.LEARNED_RANGE,
+        #     ]:
+        #         B, C = x_t.shape[:2]
+        #         assert model_output.shape == (B, C * 2, *x_t.shape[2:])
+        #         model_output, model_var_values = th.split(model_output, C, dim=1)
+        #         # Learn the variance using the variational bound, but don't let
+        #         # it affect our mean prediction.
+        #         frozen_out = th.cat([model_output.detach(), model_var_values], dim=1)
+        #         terms["vb"] = self._vb_terms_bpd(
+        #             model=lambda *args, r=frozen_out: r,
+        #             x_start=x_start,
+        #             x_t=x_t,
+        #             t=t,
+        #             clip_denoised=False,
+        #         )["output"]
+        #         if self.loss_type == LossType.RESCALED_MSE:
+        #             # Divide by 1000 for equivalence with initial implementation.
+        #             # Without a factor of 1/1000, the VB term hurts the MSE term.
+        #             terms["vb"] *= self.num_timesteps / 1000.0
+        #         print("LEARNED")
+        #     target = {
+        #         ModelMeanType.PREVIOUS_X: self.q_posterior_mean_variance(
+        #             x_start=x_start, x_t=x_t, t=t
+        #         )[0],
+        #         ModelMeanType.START_X: x_start,
+        #         ModelMeanType.EPSILON: noise,
+        #     }[self.model_mean_type]
+        #     print(model_output.shape, target.shape, x_start.shape, x_t.shape)
+        #     assert model_output.shape == target.shape == x_start.shape
+        #     terms["mse"] = mean_flat((target - model_output) ** 2)
+        #     if "vb" in terms:
+        #         terms["loss"] = terms["mse"] + terms["vb"]
+        #     else:
+        #         terms["loss"] = terms["mse"]
+        # else:
+        #     raise NotImplementedError(self.loss_type)
+
+        # return terms
+
+    def create_training_loss_fnctn(self):
         if self.loss_type == LossType.KL or self.loss_type == LossType.RESCALED_KL:
-            terms["loss"] = self._vb_terms_bpd(
+            self._training_losses = self._training_loss_KL
+        elif self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
+            self._training_losses = self._training_loss_MSE
+        else:
+            raise NotImplementedError(self.loss_type)
+        
+        # Create a fnctn that is id of terms for all but learned model_var_type
+        self.mse_learned_fn = self._training_loss_no_learned_var
+        if self.model_var_type in [
+                ModelVarType.LEARNED,
+                ModelVarType.LEARNED_RANGE,
+            ]:
+            self.mse_learned_fn = self._training_loss_learned_var
+
+    @torch.compile
+    def _training_loss_KL(self, model, x_start, x_t, t, noise=None, model_kwargs=None):
+        terms = {}
+        terms["loss"] = self._vb_terms_bpd(
                 model=model,
                 x_start=x_start,
                 x_t=x_t,
@@ -741,51 +832,63 @@ class GaussianDiffusion:
                 clip_denoised=False,
                 model_kwargs=model_kwargs,
             )["output"]
-            if self.loss_type == LossType.RESCALED_KL:
-                terms["loss"] *= self.num_timesteps
-        elif self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
-            model_output = model(x_t, t, **model_kwargs)
-
-            if self.model_var_type in [
-                ModelVarType.LEARNED,
-                ModelVarType.LEARNED_RANGE,
-            ]:
-                B, C = x_t.shape[:2]
-                assert model_output.shape == (B, C * 2, *x_t.shape[2:])
-                model_output, model_var_values = th.split(model_output, C, dim=1)
-                # Learn the variance using the variational bound, but don't let
-                # it affect our mean prediction.
-                frozen_out = th.cat([model_output.detach(), model_var_values], dim=1)
-                terms["vb"] = self._vb_terms_bpd(
-                    model=lambda *args, r=frozen_out: r,
-                    x_start=x_start,
-                    x_t=x_t,
-                    t=t,
-                    clip_denoised=False,
-                )["output"]
-                if self.loss_type == LossType.RESCALED_MSE:
-                    # Divide by 1000 for equivalence with initial implementation.
-                    # Without a factor of 1/1000, the VB term hurts the MSE term.
-                    terms["vb"] *= self.num_timesteps / 1000.0
-
-            target = {
-                ModelMeanType.PREVIOUS_X: self.q_posterior_mean_variance(
-                    x_start=x_start, x_t=x_t, t=t
-                )[0],
-                ModelMeanType.START_X: x_start,
-                ModelMeanType.EPSILON: noise,
-            }[self.model_mean_type]
-            assert model_output.shape == target.shape == x_start.shape
-            terms["mse"] = mean_flat((target - model_output) ** 2)
-            if "vb" in terms:
-                terms["loss"] = terms["mse"] + terms["vb"]
-            else:
-                terms["loss"] = terms["mse"]
-        else:
-            raise NotImplementedError(self.loss_type)
 
         return terms
 
+    @torch.compile
+    def _training_loss_rescaled_KL(self, model, x_start, x_t, t, noise=None, model_kwargs=None):
+        terms = self._training_loss_KL(model, x_start, x_t, t, noise=None, model_kwargs=model_kwargs)
+        terms["loss"] *= self.num_timesteps
+        return terms
+    
+    # @torch.compile
+    def _training_loss_MSE(self, model, x_start, x_t, t, noise=None, model_kwargs=None):
+        terms = {"vb": 0}
+
+        model_output = model(x_t, t, **model_kwargs)
+
+        terms, model_output = self.mse_learned_fn(x_start, x_t, t, terms, model_output)
+
+        target = {
+            ModelMeanType.PREVIOUS_X: self.q_posterior_mean_variance(
+                x_start=x_start, x_t=x_t, t=t
+            )[0],
+            ModelMeanType.START_X: x_start,
+            ModelMeanType.EPSILON: noise,
+        }[self.model_mean_type]
+        assert model_output.shape == target.shape == x_start.shape
+        terms["mse"] = mean_flat((target - model_output) ** 2)
+
+        terms["loss"] = terms["mse"] + terms["vb"]
+        return terms
+    
+    @torch.compile
+    def _training_loss_learned_var(self, x_start, x_t, t, terms, model_output):
+        B, C = x_t.shape[:2]
+        assert model_output.shape == (B, C * 2, *x_t.shape[2:])
+        model_output, model_var_values = th.split(model_output, C, dim=1)
+        # Learn the variance using the variational bound, but don't let
+        # it affect our mean prediction.
+        frozen_out = th.cat([model_output.detach(), model_var_values], dim=1)
+        terms["vb"] = self._vb_terms_bpd(
+            model=lambda *args, r=frozen_out: r,
+            x_start=x_start,
+            x_t=x_t,
+            t=t,
+            clip_denoised=False,
+        )["output"]
+
+        # Only for LossType.RESCALED_MSE
+        # Divide by 1000 for equivalence with initial implementation.
+        # Without a factor of 1/1000, the VB term hurts the MSE term.
+        terms["vb"] *= self.num_timesteps / self.mse_rescale
+        return terms, model_output
+    
+    @torch.compile
+    def _training_loss_no_learned_var(self, x_start, x_t, t, terms, model_output):
+        return terms, model_output
+    
+    @torch.compile
     def _prior_bpd(self, x_start):
         """
         Get the prior KL term for the variational lower-bound, measured in
@@ -802,6 +905,7 @@ class GaussianDiffusion:
         )
         return mean_flat(kl_prior) / np.log(2.0)
 
+    @torch.compile
     def calc_bpd_loop(self, model, x_start, clip_denoised=True, model_kwargs=None):
         """
         Compute the entire variational lower-bound, measured in bits-per-dim,
@@ -857,7 +961,7 @@ class GaussianDiffusion:
             "mse": mse,
         }
 
-
+@torch.compile
 def _extract_into_tensor(arr, timesteps, broadcast_shape):
     """
     Extract values from a 1-D numpy array for a batch of indices.
@@ -868,6 +972,8 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
     :return: a tensor of shape [batch_size, 1, ...] where the shape has K dims.
     """
     res = th.from_numpy(arr).to(device=timesteps.device)[timesteps].float()
-    while len(res.shape) < len(broadcast_shape):
-        res = res[..., None]
+    # while len(res.shape) < len(broadcast_shape):
+    #     res = res[..., None]
+    # Hacky way to accomplish the above
+    res = res[(...,) + (None,)*(len(broadcast_shape) - len(res.shape))]
     return res + th.zeros(broadcast_shape, device=timesteps.device)

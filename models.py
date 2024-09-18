@@ -53,11 +53,13 @@ class TimestepEmbedder(nn.Module):
             -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
         ).to(device=t.device)
         args = t[:, None].float() * freqs[None]
-        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-        if dim % 2:
-            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+        zeros_shape = list(args.shape[:-1]) + [dim%2]
+        embedding = torch.cat([torch.cos(args), torch.sin(args), torch.zeros(zeros_shape, device=args.device)], dim=-1)
+        # if dim % 2:
+        #     embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
         return embedding
-
+    
+    @torch.compile
     def forward(self, t):
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
         t_emb = self.mlp(t_freq)
@@ -68,32 +70,43 @@ class LabelEmbedder(nn.Module):
     """
     Embeds class labels into vector representations. Also handles label dropout for classifier-free guidance.
     """
-    def __init__(self, num_classes, hidden_size, dropout_prob):
+    def __init__(self, num_classes, hidden_size, dropout_prob, ):
         super().__init__()
         use_cfg_embedding = dropout_prob > 0
         self.embedding_table = nn.Embedding(num_classes + use_cfg_embedding, hidden_size)
         self.num_classes = num_classes
         self.dropout_prob = dropout_prob
+        if self.dropout_prob > 0:
+            self.forward = self._forward_token_drop
+        else:
+            self.forward = self._forward_no_drop
 
-    def token_drop(self, labels, force_drop_ids=None):
+    @torch.compile
+    def token_drop(self, labels, drop_ids):
         """
         Drops labels to enable classifier-free guidance.
         """
-        if force_drop_ids is None:
-            drop_ids = torch.rand(labels.shape[0], device=labels.device) < self.dropout_prob
-        else:
-            drop_ids = force_drop_ids == 1
         labels = torch.where(drop_ids, self.num_classes, labels)
         return labels
 
-    def forward(self, labels, train, force_drop_ids=None):
-        use_dropout = self.dropout_prob > 0
-        if (train and use_dropout) or (force_drop_ids is not None):
-            labels = self.token_drop(labels, force_drop_ids)
+    
+    @torch.compile
+    def _forward_token_drop(self, labels):
+        drop_ids = torch.rand(labels.shape[0], device=labels.device) < self.dropout_prob
+        labels = self.token_drop(labels, drop_ids)
+        embeddings = self.embedding_table(labels)
+        return embeddings
+    
+    @torch.compile
+    def _forward_force_token_drop(self, labels, force_drop_ids):
+        drop_ids = force_drop_ids == 1
+        labels = self.token_drop(labels, drop_ids)
         embeddings = self.embedding_table(labels)
         return embeddings
 
-
+    @torch.compile
+    def _forward_no_drop(self, labels):
+        return self.embedding_table(labels)
 #################################################################################
 #                                 Core DiT Model                                #
 #################################################################################
@@ -115,6 +128,7 @@ class DiTBlock(nn.Module):
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
 
+    @torch.compile
     def forward(self, x, c):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
         x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
@@ -135,6 +149,7 @@ class FinalLayer(nn.Module):
             nn.Linear(hidden_size, 2 * hidden_size, bias=True)
         )
 
+    @torch.compile
     def forward(self, x, c):
         shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
         x = modulate(self.norm_final(x), shift, scale)
@@ -215,6 +230,7 @@ class DiT(nn.Module):
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
+    @torch.compile
     def unpatchify(self, x):
         """
         x: (N, T, patch_size**2 * C)
@@ -236,6 +252,7 @@ class DiT(nn.Module):
             return outputs
         return ckpt_forward
 
+    # @torch.compile
     def forward(self, x, t, y):
         """
         Forward pass of DiT.
@@ -245,7 +262,7 @@ class DiT(nn.Module):
         """
         x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
         t = self.t_embedder(t)                   # (N, D)
-        y = self.y_embedder(y, self.training)    # (N, D)
+        y = self.y_embedder(y)    # (N, D)
         c = t + y                                # (N, D)
         for block in self.blocks:
             x = torch.utils.checkpoint.checkpoint(self.ckpt_wrapper(block), x, c)       # (N, T, D)
@@ -253,6 +270,7 @@ class DiT(nn.Module):
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
         return x
 
+    @torch.compile
     def forward_with_cfg(self, x, t, y, cfg_scale):
         """
         Forward pass of DiT, but also batches the unconditional forward pass for classifier-free guidance.
@@ -277,6 +295,7 @@ class DiT(nn.Module):
 #################################################################################
 # https://github.com/facebookresearch/mae/blob/main/util/pos_embed.py
 
+@torch.compile
 def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False, extra_tokens=0):
     """
     grid_size: int of the grid height and width
@@ -294,7 +313,7 @@ def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False, extra_tokens=
         pos_embed = np.concatenate([np.zeros([extra_tokens, embed_dim]), pos_embed], axis=0)
     return pos_embed
 
-
+@torch.compile
 def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
     assert embed_dim % 2 == 0
 
@@ -305,7 +324,7 @@ def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
     emb = np.concatenate([emb_h, emb_w], axis=1) # (H*W, D)
     return emb
 
-
+@torch.compile
 def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     """
     embed_dim: output dimension for each position

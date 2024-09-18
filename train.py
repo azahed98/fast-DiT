@@ -127,7 +127,9 @@ def main(args):
     Trains a new DiT model.
     """
     assert torch.cuda.is_available(), "Training currently requires at least one GPU."
-
+    if args.allow_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     # Setup accelerator:
     accelerator = Accelerator()
     device = accelerator.device
@@ -193,7 +195,8 @@ def main(args):
     if accelerator.is_main_process:
         logger.info(f"Training for {args.epochs} epochs...")
 
-    with torch.profiler.profile(
+
+    p = torch.profiler.profile(
         activities=[
             torch.profiler.ProfilerActivity.CPU,
             torch.profiler.ProfilerActivity.CUDA
@@ -201,59 +204,60 @@ def main(args):
         on_trace_ready=torch.profiler.tensorboard_trace_handler(f"{experiment_dir}/profiler-trace"),
         record_shapes=True,
         profile_memory=True,
-        with_stack=True
-    ) as p:
-        for epoch in range(args.epochs):
-            if accelerator.is_main_process:
-                logger.info(f"Beginning epoch {epoch}...")
-            for x,y in loader:
-                x = x.to(device)
-                y = y.to(device)
-                x = x.squeeze(dim=1)
-                y = y.squeeze(dim=1)
-                t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
-                model_kwargs = dict(y=y)
-                loss_dict = diffusion.training_losses(model, x, t, model_kwargs)
-                loss = loss_dict["loss"].mean()
-                opt.zero_grad()
-                accelerator.backward(loss)
-                opt.step()
-                update_ema(ema, model)
+    )
+    for epoch in range(args.epochs):
+        if accelerator.is_main_process:
+            logger.info(f"Beginning epoch {epoch}...")
+        for x,y in loader:
+            if train_steps == 2:
+                p.start()
+            x = x.to(device)
+            y = y.to(device)
+            x = x.squeeze(dim=1)
+            y = y.squeeze(dim=1)
+            t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
+            model_kwargs = dict(y=y)
+            loss_dict = diffusion.training_losses(model, x, t, model_kwargs)
+            loss = loss_dict["loss"].mean()
+            opt.zero_grad()
+            accelerator.backward(loss)
+            opt.step()
+            update_ema(ema, model)
 
-                # Log loss values:
-                running_loss += loss.item()
-                log_steps += 1
-                train_steps += 1
-                p.step()
+            # Log loss values:
+            running_loss += loss.item()
+            log_steps += 1
+            train_steps += 1
+            p.step()
 
-                if train_steps % args.log_every == 0:
-                    # Measure training speed:
-                    torch.cuda.synchronize()
-                    end_time = time()
-                    steps_per_sec = log_steps / (end_time - start_time)
-                    # Reduce loss history over all processes:
-                    avg_loss = torch.tensor(running_loss / log_steps, device=device)
-                    avg_loss = avg_loss.item() / accelerator.num_processes
-                    if accelerator.is_main_process:
-                        logger.info(f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
-                    # Reset monitoring variables:
-                    running_loss = 0
-                    log_steps = 0
-                    start_time = time()
+            if train_steps % args.log_every == 0:
+                # Measure training speed:
+                torch.cuda.synchronize()
+                end_time = time()
+                steps_per_sec = log_steps / (end_time - start_time)
+                # Reduce loss history over all processes:
+                avg_loss = torch.tensor(running_loss / log_steps, device=device)
+                avg_loss = avg_loss.item() / accelerator.num_processes
+                if accelerator.is_main_process:
+                    logger.info(f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+                # Reset monitoring variables:
+                running_loss = 0
+                log_steps = 0
+                start_time = time()
 
-                # Save DiT checkpoint:
-                if train_steps % args.ckpt_every == 0 and train_steps > 0:
-                    if accelerator.is_main_process:
-                        checkpoint = {
-                            "model": model.module.state_dict(),
-                            "ema": ema.state_dict(),
-                            "opt": opt.state_dict(),
-                            "args": args
-                        }
-                        checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}.pt"
-                        torch.save(checkpoint, checkpoint_path)
-                        logger.info(f"Saved checkpoint to {checkpoint_path}")
-
+            # Save DiT checkpoint:
+            if train_steps % args.ckpt_every == 0 and train_steps > 0:
+                if accelerator.is_main_process:
+                    checkpoint = {
+                        "model": model.module.state_dict(),
+                        "ema": ema.state_dict(),
+                        "opt": opt.state_dict(),
+                        "args": args
+                    }
+                    checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}.pt"
+                    torch.save(checkpoint, checkpoint_path)
+                    logger.info(f"Saved checkpoint to {checkpoint_path}")
+    p.stop()
     model.eval()  # important! This disables randomized embedding dropout
     # do any sampling/FID calculation/etc. with ema (or model) in eval mode ...
     
@@ -276,5 +280,6 @@ if __name__ == "__main__":
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--ckpt-every", type=int, default=50_000)
+    parser.add_argument("--allow-tf32", type=bool, default=True)
     args = parser.parse_args()
     main(args)
