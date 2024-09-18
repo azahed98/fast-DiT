@@ -1,0 +1,35 @@
+accelerate launch --mixed_precision fp16 train.py --model DiT-XL/2 --feature-path ../datasets/features/ --epochs 100 --global-batch-size 128
+The following values were not passed to `accelerate launch` and had defaults used instead:
+	`--num_processes` was set to a value of `1`
+	`--num_machines` was set to a value of `1`
+	`--dynamo_backend` was set to a value of `'no'`
+To avoid this warning pass in values for each of the problematic parameters or run `accelerate config`.
+/home/arshzahed/anaconda3/envs/DiT/lib/python3.12/site-packages/accelerate/accelerator.py:494: FutureWarning: `torch.cuda.amp.GradScaler(args...)` is deprecated. Please use `torch.amp.GradScaler('cuda', args...)` instead.
+  self.scaler = torch.cuda.amp.GradScaler(**kwargs)
+[2024-09-17 20:31:18] Experiment directory created at results/025-DiT-XL-2
+[2024-09-17 20:31:24] DiT Parameters: 675,129,632
+[2024-09-17 20:31:24] Dataset contains 200 images (../datasets/features/)
+[2024-09-17 20:31:24] Training for 100 epochs...
+[2024-09-17 20:31:24] Beginning epoch 0...
+/home/arshzahed/anaconda3/envs/DiT/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py:600: UserWarning: torch.utils.checkpoint: the use_reentrant parameter should be passed explicitly. In version 2.4 we will raise an exception if use_reentrant is not passed. use_reentrant=False is recommended, but if you need to preserve the current default behavior, you can pass use_reentrant=True. Refer to docs for more details on the differences between the two variants.
+  return fn(*args, **kwargs)
+/home/arshzahed/anaconda3/envs/DiT/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+[2024-09-17 20:31:26] Beginning epoch 1...
+...
+[2024-09-17 20:34:06] Beginning epoch 99...
+[2024-09-17 20:34:08] (step=0000100) Train Loss: 0.3246, Train Steps/Sec: 0.61
+[2024-09-17 20:34:08] Done!
+
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 550.107.02             Driver Version: 550.107.02     CUDA Version: 12.4     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 4090        Off |   00000000:01:00.0  On |                  Off |
+| 36%   58C    P2            378W /  450W |   23038MiB /  24564MiB |    100%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
