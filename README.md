@@ -20,7 +20,7 @@ By starting our profiling on the third step (to avoid factoring compilation time
 | Compile   | 0.76            | 23.62             | 17.86              | 88.88 %    | 36.18 %                |
 
 
-Or at least our Steps/Sec (throughput) went up and memory usage went down. However, it seems our GPU Utilization and Occupancy dropped. This is unexepcted and requires investigation.
+Or at least our Steps/Sec (throughput) went up and memory usage went down. However, it seems our GPU Utilization and Occupancy dropped. This is unexepcted and requires investigation. However, it is worth noting that the Operator with the highest host self-time is `aten:_local_scalar_dense`. This indicates we are spending substantial time moving tensors to CPU, using functions such as `item()` or `any()`.
 
 
 ## Scalable Diffusion Models with Transformers (DiT)<br><sub>Improved PyTorch Implementation</sub>
