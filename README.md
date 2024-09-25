@@ -1,9 +1,26 @@
-## DiT Even Faster
+# DiT Even Faster
 This an improved implementation of the Fast DiT PyTorch implementation. I am optimizing for training throughput of the DiT-XL/2 on a single 4090 with batch size 128. At completion, this will have improvements stemming from
 
 * Torch Compile support with reduced graph-breaks - mostly complete with a 40% training throughput improvement and 10% reduced post-compile peak memory usage.
 * Open Source Kernels (FlashAttention, Unsloth, Liger, etc)
 * Custom Triton Kernels
+* Optimization for Distributed Training (potentially a larger model)
+
+## Torch Compile
+
+The first step is to optimizing is the lowest hanging fruit - torch compile.
+
+Unfortunately, simply adding `model = torch.compile(model)` results in an OOM. Additionally, this wouldn't compile any parts of the execution graph related to diffusion and the loss. Therefore, the `@torch.compile` decorater is instead used for all possible methods. The overarching `training_losses` and some supporting methods are unable to be compiled on the system due to OOMs, possibly due to aggressive autotuning. This is to be revisited. Additionally, there are several tensors with dynamic sizes (such as `TimeStepEmbedder.timestep_embedding`) or potential graph breaks. These are to be investigated and squashed in the future.
+
+By starting our profiling on the third step (to avoid factoring compilation time into profiling), we see an improvement!
+
+| Run       | Train Steps/Sec | Reserved Mem (GB) | Peak Used Mem (GB) | GPU Util % | Est Achieved Ocuppancy |
+| --------- | --------------- | ----------------- | ------------------ | ---------- | ---------------------- |
+| Baseline  | 0.60            | 23.62             | 19.47              | 91.67 %    | 54.96 %                |
+| Compile   | 0.76            | 23.62             | 17.86              | 88.88 %    | 36.18 %                |
+
+
+Or at least our Steps/Sec (throughput) went up and memory usage went down. However, it seems our GPU Utilization and Occupancy dropped. This is unexepcted and requires investigation.
 
 
 ## Scalable Diffusion Models with Transformers (DiT)<br><sub>Improved PyTorch Implementation</sub>

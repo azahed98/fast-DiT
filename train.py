@@ -38,6 +38,8 @@ from torch.profiler import profile, record_function, ProfilerActivity
 #                             Training Helper Functions                         #
 #################################################################################
 
+torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.FLASH_ATTENTION)
+
 @torch.no_grad()
 def update_ema(ema_model, model, decay=0.9999):
     """
@@ -204,6 +206,7 @@ def main(args):
         on_trace_ready=torch.profiler.tensorboard_trace_handler(f"{experiment_dir}/profiler-trace"),
         record_shapes=True,
         profile_memory=True,
+        with_stack=True,
     )
     for epoch in range(args.epochs):
         if accelerator.is_main_process:
