@@ -32,7 +32,7 @@ from models import DiT_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 
-from torch.profiler import profile, record_function, ProfilerActivity
+from torch.profiler import profile, ProfilerActivity
 
 #################################################################################
 #                             Training Helper Functions                         #
@@ -160,7 +160,7 @@ def main(args):
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     requires_grad(ema, False)
     diffusion = create_diffusion(timestep_respacing="")  # default: 1000 steps, linear noise schedule
-    vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
+    # vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     if accelerator.is_main_process:
         logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
@@ -198,22 +198,31 @@ def main(args):
         logger.info(f"Training for {args.epochs} epochs...")
 
 
-    p = torch.profiler.profile(
+    p = profile(
         activities=[
-            torch.profiler.ProfilerActivity.CPU,
-            torch.profiler.ProfilerActivity.CUDA
+            ProfilerActivity.CPU,
+            ProfilerActivity.CUDA
         ],
+        # schedule=torch.profiler.schedule(
+        #     wait=1,
+        #     warmup=1,
+        #     active=2
+        # ),
         on_trace_ready=torch.profiler.tensorboard_trace_handler(f"{experiment_dir}/profiler-trace"),
         record_shapes=True,
         profile_memory=True,
-        with_stack=True,
+        with_stack=False,
+        experimental_config=torch._C._profiler._ExperimentalConfig(verbose=True),
     )
+    # p.start()
     for epoch in range(args.epochs):
         if accelerator.is_main_process:
             logger.info(f"Beginning epoch {epoch}...")
         for x,y in loader:
             if train_steps == 2:
                 p.start()
+            # elif train_steps == 3:
+            #     p.stop()
             x = x.to(device)
             y = y.to(device)
             x = x.squeeze(dim=1)

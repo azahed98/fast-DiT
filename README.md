@@ -1,5 +1,5 @@
-# DiT Even Faster
-This an improved implementation of the Fast DiT PyTorch implementation. I am optimizing for training throughput of the DiT-XL/2 on a single 4090 with batch size 128. At completion, this will have improvements stemming from
+# DiT Even Faster (on RTX 4090)
+This an improved implementation of the Fast DiT PyTorch implementation, primarily for the RTX 4090. I am optimizing for training throughput of the DiT-XL/2 on a single 4090 with batch size 128. At completion, this will have improvements stemming from
 
 * Torch Compile support with reduced graph-breaks - mostly complete with a 40% training throughput improvement and 10% reduced post-compile peak memory usage.
 * Open Source Kernels (FlashAttention, Unsloth, Liger, etc)
@@ -22,6 +22,7 @@ By starting our profiling on the third step (to avoid factoring compilation time
 
 Or at least our Steps/Sec (throughput) went up and memory usage went down. However, it seems our GPU Utilization and Occupancy dropped. This is unexepcted and requires investigation. However, it is worth noting that the Operator with the highest host self-time is `aten:_local_scalar_dense`. This indicates we are spending substantial time moving tensors to CPU, using functions such as `item()` or `any()`.
 
+By tracing the call stack, we find that the majority of these calls come from `torch.amp.GradScaler.`
 
 ## Scalable Diffusion Models with Transformers (DiT)<br><sub>Improved PyTorch Implementation</sub>
 

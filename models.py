@@ -15,6 +15,8 @@ import numpy as np
 import math
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
 
+import os
+from liger_kernel.transformers.experimental.embedding import LigerEmbedding
 
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
@@ -70,10 +72,13 @@ class LabelEmbedder(nn.Module):
     """
     Embeds class labels into vector representations. Also handles label dropout for classifier-free guidance.
     """
-    def __init__(self, num_classes, hidden_size, dropout_prob, ):
+    def __init__(self, num_classes, hidden_size, dropout_prob, use_liger=bool(os.getenv('USE_LIGER', True))):
         super().__init__()
         use_cfg_embedding = dropout_prob > 0
-        self.embedding_table = nn.Embedding(num_classes + use_cfg_embedding, hidden_size)
+        if use_liger:
+            self.embedding_table = LigerEmbedding(num_classes + use_cfg_embedding, hidden_size)
+        else:
+            self.embedding_table = nn.Embedding(num_classes + use_cfg_embedding, hidden_size)
         self.num_classes = num_classes
         self.dropout_prob = dropout_prob
 
